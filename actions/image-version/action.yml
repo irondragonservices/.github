@@ -1,0 +1,88 @@
+name: Resolve image version and tags
+description: >-
+  Derive this image's version from the upstream tag its Dockerfile builds on,
+  and expand it into the tag list to publish.
+
+# These images are not versioned independently — an iron-alpine is only ever
+# "iron-alpine of alpine 3.24.1". Reading the version out of the FROM line
+# means there is one place the version lives and no second file to forget to
+# bump.
+
+inputs:
+  version-from:
+    description: >-
+      Upstream image name to read the version from, e.g. "alpine" for
+      `FROM alpine:3.24.1`. Matches the first FROM line naming that image, so
+      it works on a multi-stage build whose final stage is distroless.
+    required: true
+  dockerfile:
+    required: false
+    default: Dockerfile
+  image:
+    description: Fully qualified image name the tags are built on.
+    required: true
+
+outputs:
+  version:
+    description: The resolved version, e.g. 3.24.1.
+    value: ${{ steps.resolve.outputs.version }}
+  tags:
+    description: Newline-separated tag list for docker/build-push-action.
+    value: ${{ steps.resolve.outputs.tags }}
+
+runs:
+  using: composite
+  steps:
+    - id: resolve
+      shell: bash
+      env:
+        VERSION_FROM: ${{ inputs.version-from }}
+        DOCKERFILE: ${{ inputs.dockerfile }}
+        IMAGE: ${{ inputs.image }}
+      run: |
+        set -euo pipefail
+
+        # The tag as written, with any digest pin and any "AS stage" suffix
+        # removed. Renovate pins digests, so the line is normally
+        # `FROM alpine:3.24.1@sha256:...`.
+        tag="$(grep -m1 -E "^FROM +${VERSION_FROM}:" "$DOCKERFILE" \
+          | sed -E 's/^FROM +[^:]+:([^@[:space:]]+).*/\1/')"
+        if [ -z "$tag" ]; then
+          echo "::error file=${DOCKERFILE}::no 'FROM ${VERSION_FROM}:<version>' line found"
+          exit 1
+        fi
+
+        # A variant suffix is not part of the version. `debian:13.6-slim` is
+        # Debian 13.6, and publishing iron-debian:13.6-slim would mean the
+        # series tags never form and a consumer could not pin to :13.
+        # A leading v is a tagging convention, not part of the version:
+        # cockroach publishes v21.2.0 and the image should publish 21.2.0, or
+        # the series tags never form.
+        bare="${tag#v}"
+        if printf '%s' "$bare" | grep -qE '^[0-9]'; then
+          version="$(printf '%s' "$bare" | sed -E 's/^([0-9]+(\.[0-9]+)*).*/\1/')"
+        else
+          # A codename — bookworm, buster. Nothing to decompose; use it whole.
+          version="$tag"
+        fi
+
+        short="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+        tags="${IMAGE}:${version}"$'\n'"${IMAGE}:latest"$'\n'"${IMAGE}:sha-${short}"
+
+        # Rolling series tags, so a consumer pins as loosely or as tightly as
+        # they want: 3, 3.24, 3.24.1.
+        if printf '%s' "$version" | grep -qE '^[0-9]+(\.[0-9]+)+$'; then
+          major="${version%%.*}"
+          rest="${version#*.}"
+          minor="${major}.${rest%%.*}"
+          [ "$minor" != "$version" ] && tags="${tags}"$'\n'"${IMAGE}:${minor}"
+          tags="${tags}"$'\n'"${IMAGE}:${major}"
+        fi
+
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+        {
+          echo 'tags<<TAGS'
+          printf '%s\n' "$tags"
+          echo 'TAGS'
+        } >> "$GITHUB_OUTPUT"
+        printf 'Upstream tag %s -> version %s\nTags:\n%s\n' "$tag" "$version" "$tags"

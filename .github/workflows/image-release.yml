@@ -1,0 +1,173 @@
+# Build, sign and publish a hardened image, then scan what was actually
+# published.
+#
+# Called by every image repo's .github/workflows/release.yml on push to main.
+name: image release
+
+on:
+  workflow_call:
+    inputs:
+      version-from:
+        description: >-
+          Upstream image whose tag defines this image's version. The published
+          tags track upstream, so iron-alpine built on alpine 3.24.1 publishes
+          3.24.1, 3.24 and 3.
+        type: string
+        required: false
+        default: ""
+      dockerfile:
+        type: string
+        required: false
+        default: Dockerfile
+      context:
+        type: string
+        required: false
+        default: "."
+      platforms:
+        type: string
+        required: false
+        default: linux/amd64,linux/arm64
+      severity:
+        type: string
+        required: false
+        default: CRITICAL,HIGH
+      release:
+        description: Cut a GitHub release for a version that does not have one.
+        type: boolean
+        required: false
+        default: true
+    secrets:
+      dragonguard-token:
+        required: false
+    outputs:
+      version:
+        value: ${{ jobs.publish.outputs.version }}
+      digest:
+        value: ${{ jobs.publish.outputs.digest }}
+
+permissions:
+  contents: write        # tags and releases
+  packages: write        # push to GHCR
+  id-token: write        # cosign keyless signing
+  security-events: write # SARIF upload
+
+# Two pushes to main must not race each other onto the same tag.
+concurrency:
+  group: image-release-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: publish
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve version and tags
+        id: version
+        uses: irondragonservices/.github/actions/image-version@main
+        with:
+          version-from: ${{ inputs.version-from }}
+          dockerfile: ${{ inputs.dockerfile }}
+          image: ghcr.io/${{ github.repository }}
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.dockerfile }}
+          platforms: ${{ inputs.platforms }}
+          push: true
+          tags: ${{ steps.version.outputs.tags }}
+          # A hardened image that cannot say what is inside it is not much use
+          # to whoever has to answer for it later.
+          sbom: true
+          provenance: mode=max
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      # Keyless: the signature is bound to this workflow's OIDC identity, so
+      # there is no key to leak or rotate. Verify with
+      #   cosign verify ghcr.io/<repo>@<digest> \
+      #     --certificate-identity-regexp '^https://github.com/irondragonservices/' \
+      #     --certificate-oidc-issuer https://token.actions.githubusercontent.com
+      - name: Sign the manifest
+        run: cosign sign --yes "ghcr.io/${{ github.repository }}@${{ steps.build.outputs.digest }}"
+
+      # The pull request scanned a locally built image. This scans the artefact
+      # that consumers will actually pull, by digest.
+      - name: Scan the published image
+        uses: irondragonservices/.github/actions/dragon-scan@main
+        with:
+          image: ghcr.io/${{ github.repository }}@${{ steps.build.outputs.digest }}
+          severity: ${{ inputs.severity }}
+          fail-on: ""
+          dragonguard-token: ${{ secrets.dragonguard-token }}
+
+      - name: Upload SARIF
+        # Code scanning on a private repository needs GitHub Advanced
+        # Security. Its absence must not fail a release that succeeded.
+        continue-on-error: true
+        if: always() && hashFiles('dragon.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: dragon.sarif
+          category: image
+
+      - name: Cut a release for a new version
+        if: inputs.release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+          IMAGE: ghcr.io/${{ github.repository }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          tag="v${VERSION}"
+          # Republishing an unchanged version is routine here: a scheduled
+          # rebuild picks up patched packages without the upstream tag moving.
+          # The release marks the version, so it is cut once.
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists; image tags were refreshed in place."
+            exit 0
+          fi
+          gh release create "$tag" \
+            --title "$tag" \
+            --notes "$(printf '%s\n' \
+              "Hardened image built on \`${{ inputs.version-from }}:${VERSION}\`." \
+              "" \
+              '```' \
+              "docker pull ${IMAGE}:${VERSION}" \
+              '```' \
+              "" \
+              "Digest: \`${DIGEST}\`" \
+              "" \
+              "Signed with cosign (keyless). Verify:" \
+              '```' \
+              "cosign verify ${IMAGE}@${DIGEST} \\" \
+              "  --certificate-identity-regexp '^https://github.com/${{ github.repository_owner }}/' \\" \
+              "  --certificate-oidc-issuer https://token.actions.githubusercontent.com" \
+              '```')"

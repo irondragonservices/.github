@@ -1,0 +1,124 @@
+# Pull request gate for a hardened image repository.
+#
+# Called by every image repo's .github/workflows/pr.yml. Keeping the logic
+# here means a fix reaches the whole fleet on the next run, without a commit
+# to ten repositories.
+name: image pull request
+
+on:
+  workflow_call:
+    inputs:
+      version-from:
+        description: >-
+          Upstream image whose tag defines this image's version, e.g. "alpine"
+          for a Dockerfile whose first line is FROM alpine:3.24.1. Empty means
+          the image is not versioned against an upstream.
+        type: string
+        required: false
+        default: ""
+      dockerfile:
+        type: string
+        required: false
+        default: Dockerfile
+      context:
+        type: string
+        required: false
+        default: "."
+      platforms:
+        description: Architectures the image must build for.
+        type: string
+        required: false
+        default: linux/amd64,linux/arm64
+      severity:
+        type: string
+        required: false
+        default: CRITICAL,HIGH
+      fail-on:
+        description: >-
+          Rating at which the gate blocks the pull request. Set to an empty
+          string to report without blocking.
+        type: string
+        required: false
+        default: high
+      hadolint-failure-threshold:
+        type: string
+        required: false
+        default: warning
+    secrets:
+      dragonguard-token:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: ${{ inputs.dockerfile }}
+          failure-threshold: ${{ inputs.hadolint-failure-threshold }}
+
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: version
+        uses: irondragonservices/.github/actions/image-version@main
+        with:
+          version-from: ${{ inputs.version-from }}
+          dockerfile: ${{ inputs.dockerfile }}
+          image: candidate
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      # Every architecture has to build. A hardened image does most of its work
+      # in `find`/`chmod` layers that behave differently under emulation, so
+      # arm64 breaking while amd64 passes is a real outcome, not a theoretical
+      # one.
+      - name: Build all platforms
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.dockerfile }}
+          platforms: ${{ inputs.platforms }}
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Scanning needs the image in the local daemon, and a manifest list
+      # cannot be loaded. Build the native architecture again — the layer cache
+      # from the step above makes this close to free.
+      - name: Load amd64 for scanning
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.dockerfile }}
+          platforms: linux/amd64
+          load: true
+          tags: candidate:${{ steps.version.outputs.version }}
+          cache-from: type=gha
+
+      - name: Scan
+        uses: irondragonservices/.github/actions/dragon-scan@main
+        with:
+          image: candidate:${{ steps.version.outputs.version }}
+          severity: ${{ inputs.severity }}
+          fail-on: ${{ inputs.fail-on }}
+          dragonguard-token: ${{ secrets.dragonguard-token }}
+
+      - name: Upload report
+        if: always() && hashFiles('dragon.md') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: scan-report
+          path: |
+            dragon.md
+            dragon.sarif

@@ -1,0 +1,258 @@
+# Keeping a published hardened image honest between commits.
+#
+# Renovate already covers the case where upstream moves: it pins digests, and
+# a base-image bump arrives as an auto-merged pull request that runs the full
+# gate. This workflow covers the two cases Renovate cannot see.
+#
+#   1. The Dockerfile installs packages (ca-certificates, and more in the app
+#      images). Those get security updates without the base image tag or its
+#      digest moving. Nothing triggers a rebuild, so the published image drifts
+#      further from a fresh build every day it sits there.
+#
+#   2. A CVE is disclosed today against an image built last month. Nothing
+#      about the repository changed, so nothing re-scans it, and the finding
+#      only surfaces the next time somebody happens to push.
+#
+# So: rebuild with the layer cache disabled, compare the resulting package set
+# against what is published, and republish only when it actually differs — and
+# re-scan the published image every run regardless.
+name: image refresh
+
+on:
+  workflow_call:
+    inputs:
+      version-from:
+        type: string
+        required: false
+        default: ""
+      dockerfile:
+        type: string
+        required: false
+        default: Dockerfile
+      context:
+        type: string
+        required: false
+        default: "."
+      platforms:
+        type: string
+        required: false
+        default: linux/amd64,linux/arm64
+      severity:
+        type: string
+        required: false
+        default: CRITICAL,HIGH
+      republish:
+        description: Push a rebuilt image when its package set has changed.
+        type: boolean
+        required: false
+        default: true
+      trivy-version:
+        type: string
+        required: false
+        default: "0.74.0"
+    secrets:
+      dragonguard-token:
+        required: false
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+  security-events: write
+  issues: write
+
+concurrency:
+  group: image-refresh-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  rescan:
+    name: rescan published
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Scan
+        uses: irondragonservices/.github/actions/dragon-scan@main
+        with:
+          image: ghcr.io/${{ github.repository }}:latest
+          severity: ${{ inputs.severity }}
+          fail-on: ""
+          dragonguard-token: ${{ secrets.dragonguard-token }}
+          trivy-version: ${{ inputs.trivy-version }}
+
+      - name: Upload SARIF
+        continue-on-error: true
+        if: always() && hashFiles('dragon.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: dragon.sarif
+          category: image
+
+      - name: Gate
+        id: gate
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          trivy image --exit-code 1 --severity "${{ inputs.severity }}" \
+            --ignore-unfixed --no-progress "ghcr.io/${{ github.repository }}:latest"
+
+      # One issue, updated in place. A new issue per run gets muted within a
+      # week, and a muted alert is the same as no alert.
+      - name: Track findings in an issue
+        if: always()
+        uses: actions/github-script@v7
+        env:
+          SEVERITY: ${{ inputs.severity }}
+          GATE_OUTCOME: ${{ steps.gate.outcome }}
+        with:
+          script: |
+            const fs = require('fs');
+            const {owner, repo} = context.repo;
+            const title = 'Vulnerabilities in the published image';
+            const failed = process.env.GATE_OUTCOME === 'failure';
+
+            const existing = await github.paginate(github.rest.issues.listForRepo, {
+              owner, repo, state: 'open', labels: 'security',
+            });
+            const mine = existing.find(i => i.title === title);
+
+            if (!failed) {
+              if (mine) {
+                await github.rest.issues.createComment({owner, repo, issue_number: mine.number,
+                  body: `Clear as of ${new Date().toISOString()} — no fixable ${process.env.SEVERITY} findings remain.`});
+                await github.rest.issues.update({owner, repo, issue_number: mine.number, state: 'closed'});
+              }
+              return;
+            }
+
+            let report = '';
+            try { report = fs.readFileSync('dragon.md', 'utf8'); } catch (e) {}
+            const body = [
+              `The image published at \`ghcr.io/${owner}/${repo}:latest\` has fixable`,
+              `findings at ${process.env.SEVERITY}.`,
+              '',
+              `Last checked: ${new Date().toISOString()}`,
+              `Run: ${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`,
+              '',
+              report ? '<details><summary>Report</summary>\n\n```\n' + report.slice(0, 55000) + '\n```\n</details>' : '',
+            ].join('\n');
+
+            if (mine) {
+              await github.rest.issues.update({owner, repo, issue_number: mine.number, body});
+            } else {
+              await github.rest.issues.create({owner, repo, title, body, labels: ['security']});
+            }
+
+  rebuild:
+    name: rebuild
+    if: inputs.republish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve version and tags
+        id: version
+        uses: irondragonservices/.github/actions/image-version@main
+        with:
+          version-from: ${{ inputs.version-from }}
+          dockerfile: ${{ inputs.dockerfile }}
+          image: ghcr.io/${{ github.repository }}
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install Trivy
+        run: |
+          set -euo pipefail
+          curl -fsSL "https://github.com/aquasecurity/trivy/releases/download/v${{ inputs.trivy-version }}/trivy_${{ inputs.trivy-version }}_Linux-64bit.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin trivy
+
+      # No cache, or the whole exercise is pointless: a warm cache replays the
+      # apk/apt layer from the day it was first built and picks up nothing.
+      - name: Rebuild without cache
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.dockerfile }}
+          platforms: linux/amd64
+          load: true
+          no-cache: true
+          tags: refresh-candidate:latest
+
+      # Digests are not comparable — a rebuild changes timestamps and therefore
+      # the digest even when nothing inside moved. The package set is the thing
+      # that actually matters, so compare that.
+      - name: Compare package sets
+        id: diff
+        run: |
+          set -euo pipefail
+          # SBOM mode, not vulnerability mode: this step is asking what is
+          # installed, not what is wrong with it, and skipping the vulnerability
+          # database keeps it quick.
+          fingerprint() {
+            trivy image --quiet --no-progress --format spdx-json "$1" \
+              | jq -r '[.packages[]? | "\(.name)@\(.versionInfo)"] | sort | .[]'
+          }
+          fingerprint refresh-candidate:latest > candidate.txt
+          if ! fingerprint "ghcr.io/${{ github.repository }}:latest" > published.txt; then
+            echo "::notice::no published image to compare against; publishing the rebuild"
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if diff -u published.txt candidate.txt > pkgdiff.txt; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Package set is unchanged; nothing to republish."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "Package set changed:"
+            cat pkgdiff.txt
+            {
+              echo '### Packages changed since the published image'
+              echo '```diff'
+              cat pkgdiff.txt
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Republish
+        id: build
+        if: steps.diff.outputs.changed == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.dockerfile }}
+          platforms: ${{ inputs.platforms }}
+          push: true
+          no-cache: true
+          tags: ${{ steps.version.outputs.tags }}
+          sbom: true
+          provenance: mode=max
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+
+      - name: Install cosign
+        if: steps.diff.outputs.changed == 'true'
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign the manifest
+        if: steps.diff.outputs.changed == 'true'
+        run: cosign sign --yes "ghcr.io/${{ github.repository }}@${{ steps.build.outputs.digest }}"
