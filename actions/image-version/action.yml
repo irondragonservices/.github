@@ -14,7 +14,17 @@ inputs:
       Upstream image name to read the version from, e.g. "alpine" for
       `FROM alpine:3.24.1`. Matches the first FROM line naming that image, so
       it works on a multi-stage build whose final stage is distroless.
-    required: true
+      Leave empty when using version-arg.
+    required: false
+    default: ""
+  version-arg:
+    description: >-
+      Dockerfile ARG to read the version from instead, e.g. "SNAPRAID_VERSION"
+      for `ARG SNAPRAID_VERSION=14.9`. For images built from a source release
+      rather than from somebody else's image, where there is no upstream tag to
+      read.
+    required: false
+    default: ""
   dockerfile:
     required: false
     default: Dockerfile
@@ -37,18 +47,34 @@ runs:
       shell: bash
       env:
         VERSION_FROM: ${{ inputs.version-from }}
+        VERSION_ARG: ${{ inputs.version-arg }}
         DOCKERFILE: ${{ inputs.dockerfile }}
         IMAGE: ${{ inputs.image }}
       run: |
         set -euo pipefail
 
-        # The tag as written, with any digest pin and any "AS stage" suffix
-        # removed. Renovate pins digests, so the line is normally
-        # `FROM alpine:3.24.1@sha256:...`.
-        tag="$(grep -m1 -E "^FROM +${VERSION_FROM}:" "$DOCKERFILE" \
-          | sed -E 's/^FROM +[^:]+:([^@[:space:]]+).*/\1/')"
-        if [ -z "$tag" ]; then
-          echo "::error file=${DOCKERFILE}::no 'FROM ${VERSION_FROM}:<version>' line found"
+        if [ -n "$VERSION_ARG" ]; then
+          # An image built from a source release has no upstream image tag to
+          # read, so the version lives in an ARG. Still one place, still in the
+          # Dockerfile.
+          tag="$(grep -m1 -E "^ARG +${VERSION_ARG}=" "$DOCKERFILE" \
+            | sed -E "s/^ARG +${VERSION_ARG}=[\"']?([^\"'[:space:]]+).*/\1/")"
+          if [ -z "$tag" ]; then
+            echo "::error file=${DOCKERFILE}::no 'ARG ${VERSION_ARG}=<version>' line found"
+            exit 1
+          fi
+        elif [ -n "$VERSION_FROM" ]; then
+          # The tag as written, with any digest pin and any "AS stage" suffix
+          # removed. Renovate pins digests, so the line is normally
+          # `FROM alpine:3.24.1@sha256:...`.
+          tag="$(grep -m1 -E "^FROM +${VERSION_FROM}:" "$DOCKERFILE" \
+            | sed -E 's/^FROM +[^:]+:([^@[:space:]]+).*/\1/')"
+          if [ -z "$tag" ]; then
+            echo "::error file=${DOCKERFILE}::no 'FROM ${VERSION_FROM}:<version>' line found"
+            exit 1
+          fi
+        else
+          echo "::error::one of version-from or version-arg is required"
           exit 1
         fi
 

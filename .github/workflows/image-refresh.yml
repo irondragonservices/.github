@@ -25,6 +25,14 @@ on:
         type: string
         required: false
         default: ""
+      version-arg:
+        description: >-
+          Dockerfile ARG holding the version, for images built from a source
+          release rather than from somebody else's image. Mutually exclusive
+          with version-from.
+        type: string
+        required: false
+        default: ""
       dockerfile:
         type: string
         required: false
@@ -165,6 +173,7 @@ jobs:
         uses: irondragonservices/.github/actions/image-version@main
         with:
           version-from: ${{ inputs.version-from }}
+          version-arg: ${{ inputs.version-arg }}
           dockerfile: ${{ inputs.dockerfile }}
           image: ghcr.io/${{ github.repository }}
 

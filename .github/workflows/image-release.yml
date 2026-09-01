@@ -7,6 +7,14 @@ name: image release
 on:
   workflow_call:
     inputs:
+      version-arg:
+        description: >-
+          Dockerfile ARG holding the version, for images built from a source
+          release rather than from somebody else's image. Mutually exclusive
+          with version-from.
+        type: string
+        required: false
+        default: ""
       version-from:
         description: >-
           Upstream image whose tag defines this image's version. The published
@@ -73,6 +81,7 @@ jobs:
         uses: irondragonservices/.github/actions/image-version@main
         with:
           version-from: ${{ inputs.version-from }}
+          version-arg: ${{ inputs.version-arg }}
           dockerfile: ${{ inputs.dockerfile }}
           image: ghcr.io/${{ github.repository }}
 
