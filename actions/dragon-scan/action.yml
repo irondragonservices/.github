@@ -141,15 +141,23 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        trivy image --format sarif --output "${{ inputs.sarif-output }}" \
+        # Trivy auto-detects .trivyignore in the working directory, but naming
+        # it is worth the line: a suppression that silently stops applying
+        # because the working directory moved is worse than no suppression.
+        ignore=()
+        if [ -f .trivyignore ]; then
+          ignore=(--ignorefile .trivyignore)
+          echo "::notice::using .trivyignore"
+        fi
+        trivy image "${ignore[@]}" --format sarif --output "${{ inputs.sarif-output }}" \
           --severity "${{ inputs.severity }}" --ignore-unfixed --no-progress \
           "${{ inputs.image }}"
-        trivy image --format table --output "${{ inputs.markdown-output }}" \
+        trivy image "${ignore[@]}" --format table --output "${{ inputs.markdown-output }}" \
           --severity "${{ inputs.severity }}" --ignore-unfixed --no-progress \
           "${{ inputs.image }}"
         # Only gate when asked to. A scheduled re-scan reports; a pull request
         # blocks.
         if [ -n "${{ inputs.fail-on }}" ]; then
-          trivy image --exit-code 1 --severity "${{ inputs.severity }}" \
+          trivy image "${ignore[@]}" --exit-code 1 --severity "${{ inputs.severity }}" \
             --ignore-unfixed --no-progress "${{ inputs.image }}"
         fi
