@@ -5,10 +5,19 @@ description: >-
 
 # DragonGuard is the unifying layer: it normalises Trivy (and, on source
 # targets, OpenGrep, Gitleaks and OSV) into one finding schema, scores it
-# against the asset's context and gates on a baseline. Until it publishes
-# releases it lives in a private repository, so this action degrades to the
-# engine underneath rather than failing a build over a missing secret. When
-# DragonGuard ships a public binary, only this file changes.
+# against the asset's context and gates on a baseline. It lives in a private
+# repository, and rather than publishing it or minting a personal access token
+# to read it, this mints a short-lived installation token for the
+# dragonsecurity-ci GitHub App, which is installed on DragonSecurity with
+# contents:read as well as on this org.
+#
+# An app token beats a PAT on every axis that matters here: it expires within
+# the hour, it is scoped to one repository in one organisation rather than to
+# everything a person can see, and it belongs to no one, so it survives that
+# person leaving.
+#
+# With no private key configured the action falls back to raw Trivy rather than
+# failing a build over a missing secret.
 
 inputs:
   image:
@@ -32,8 +41,16 @@ inputs:
     description: Where to write the human-readable report.
     required: false
     default: dragon.md
-  dragonguard-token:
-    description: Token with read access to DragonSecurity/dragonguard.
+  app-id:
+    description: >-
+      GitHub App that can read DragonSecurity/dragonguard. Defaults to
+      dragonsecurity-ci, which is installed on both organisations.
+    required: false
+    default: "4777161"
+  private-key:
+    description: >-
+      Private key for that app. Without it there is no way to read DragonGuard,
+      and the scan falls back to Trivy.
     required: false
     default: ""
   dragonguard-ref:
@@ -63,11 +80,11 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        if [ -n "${{ inputs.dragonguard-token }}" ]; then
+        if [ -n "${{ inputs.private-key }}" ]; then
           echo "engine=dragonguard" >> "$GITHUB_OUTPUT"
         else
           echo "engine=trivy" >> "$GITHUB_OUTPUT"
-          echo "::notice::DRAGONGUARD_TOKEN is not set; falling back to raw Trivy. Findings will not be scored or gated."
+          echo "::notice::No DragonGuard app private key configured; falling back to raw Trivy. Findings will not be scored or gated."
         fi
 
     # DragonGuard shells out to Trivy for container targets, so the binary is
@@ -80,13 +97,26 @@ runs:
           | sudo tar -xz -C /usr/local/bin trivy
         trivy --version
 
+    # Scoped to one repository in the other organisation, and good for an hour.
+    # The owner/repositories pair is what selects the DragonSecurity
+    # installation of the app rather than this org's.
+    - name: Mint an installation token for DragonGuard
+      id: app-token
+      if: steps.engine.outputs.engine == 'dragonguard'
+      uses: actions/create-github-app-token@v2
+      with:
+        app-id: ${{ inputs.app-id }}
+        private-key: ${{ inputs.private-key }}
+        owner: DragonSecurity
+        repositories: dragonguard
+
     - name: Check out DragonGuard
       if: steps.engine.outputs.engine == 'dragonguard'
       uses: actions/checkout@v4
       with:
         repository: DragonSecurity/dragonguard
         ref: ${{ inputs.dragonguard-ref }}
-        token: ${{ inputs.dragonguard-token }}
+        token: ${{ steps.app-token.outputs.token }}
         path: .dragonguard-src
 
     - name: Set up Go

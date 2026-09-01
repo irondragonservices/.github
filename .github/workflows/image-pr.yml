@@ -53,7 +53,10 @@ on:
         required: false
         default: warning
     secrets:
-      dragonguard-token:
+      dragonguard-private-key:
+        description: >-
+          Private key for the GitHub App that can read
+          DragonSecurity/dragonguard. Absent, the scan falls back to Trivy.
         required: false
 
 permissions:
@@ -121,7 +124,7 @@ jobs:
           image: candidate:${{ steps.version.outputs.version }}
           severity: ${{ inputs.severity }}
           fail-on: ${{ inputs.fail-on }}
-          dragonguard-token: ${{ secrets.dragonguard-token }}
+          private-key: ${{ secrets.dragonguard-private-key }}
 
       - name: Upload report
         if: always() && hashFiles('dragon.md') != ''

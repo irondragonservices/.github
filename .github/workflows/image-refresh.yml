@@ -59,7 +59,10 @@ on:
         required: false
         default: "0.74.0"
     secrets:
-      dragonguard-token:
+      dragonguard-private-key:
+        description: >-
+          Private key for the GitHub App that can read
+          DragonSecurity/dragonguard. Absent, the scan falls back to Trivy.
         required: false
 
 permissions:
@@ -93,7 +96,7 @@ jobs:
           image: ghcr.io/${{ github.repository }}:latest
           severity: ${{ inputs.severity }}
           fail-on: ""
-          dragonguard-token: ${{ secrets.dragonguard-token }}
+          private-key: ${{ secrets.dragonguard-private-key }}
           trivy-version: ${{ inputs.trivy-version }}
 
       - name: Upload SARIF

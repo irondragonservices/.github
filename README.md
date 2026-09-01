@@ -29,7 +29,7 @@ jobs:
     with:
       version-from: alpine
     secrets:
-      dragonguard-token: ${{ secrets.DRAGONGUARD_TOKEN }}
+      dragonguard-private-key: ${{ secrets.DRAGONGUARD_APP_PRIVATE_KEY }}
 ```
 
 `version-from` names the upstream image whose tag defines this image's
@@ -102,13 +102,28 @@ docker buildx imagetools inspect ghcr.io/irondragonservices/iron-alpine:3 \
 The scan step prefers [DragonGuard](https://github.com/DragonSecurity/dragonguard),
 which normalises Trivy and the other engines into one finding schema, scores
 each finding against the asset's context, and gates on a baseline rather than
-on a raw severity count. It is private and pre-release, so `actions/dragon-scan`
-degrades to raw Trivy when `DRAGONGUARD_TOKEN` is not set rather than failing a
-build over a missing secret. When DragonGuard publishes a binary, that one file
-changes and the fleet picks it up.
+on a raw severity count.
 
-Set the org secret `DRAGONGUARD_TOKEN` to a token with read access to
-`DragonSecurity/dragonguard` to turn it on.
+DragonGuard is private, and it stays private. `actions/dragon-scan` reads it by
+minting a short-lived installation token for the **dragonsecurity-ci** GitHub
+App (app `4777161`), which is installed on `DragonSecurity` with `contents:read`
+and on this organisation. The token is scoped to the one repository, expires
+within the hour, and belongs to no one — so unlike a personal access token it
+does not need rotating and does not stop working when somebody leaves.
+
+To turn it on, set one organisation secret:
+
+| Secret | Value |
+|---|---|
+| `DRAGONGUARD_APP_PRIVATE_KEY` | The PEM private key for the `dragonsecurity-ci` app |
+
+Without it the action logs a notice and falls back to raw Trivy, rather than
+failing a build over a missing secret. Findings are then unscored and ungated
+but still block on `CRITICAL`/`HIGH` and still upload SARIF.
+
+The app id is an input with a default, so a different app can be used by
+passing `app-id` — the installation has to exist on `DragonSecurity` with
+`contents:read` for the token request to succeed.
 
 ## Adding an image repository
 
