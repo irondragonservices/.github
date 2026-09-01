@@ -8,8 +8,10 @@ published image current — digest-pinned bases with auto-merged updates, a
 cache-free scheduled rebuild that republishes only on a real package change,
 and a re-scan that catches vulnerabilities disclosed after the build.
 
-Every image is multi-architecture, signed with cosign keyless, and ships an
-SBOM and provenance attestation.
+Every published image is multi-architecture, signed with cosign keyless, and
+ships an SBOM and provenance attestation. `iron-nessus` is the one exception
+and is deliberately not published — Nessus is licensed per activation, so a
+built image carries somebody's entitlement.
 
 | Image | Base | For |
 |---|---|---|
@@ -22,6 +24,6 @@ SBOM and provenance attestation.
 | [iron-argo](https://github.com/irondragonservices/iron-argo) | scratch | Cloudflare Tunnel |
 | [iron-squid](https://github.com/irondragonservices/iron-squid) | distroless | Squid proxy |
 | [iron-snapraid](https://github.com/irondragonservices/iron-snapraid) | scratch | SnapRAID |
-| [iron-nessus](https://github.com/irondragonservices/iron-nessus) | debian | Nessus |
+| [iron-nessus](https://github.com/irondragonservices/iron-nessus) | debian | Nessus — **not published**, build it yourself |
 
 CI for all of them lives in [`.github`](https://github.com/irondragonservices/.github).

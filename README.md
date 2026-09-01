@@ -36,6 +36,11 @@ jobs:
 version. `FROM alpine:3.24.1` publishes `3.24.1`, `3.24`, `3` and `latest`, so
 a consumer can pin as tightly or as loosely as they want.
 
+For an image built from a source release rather than from somebody else's
+image — `iron-snapraid` compiles from a tarball, `iron-squid` comes out of a
+Debian package — use `version-arg` instead and name the Dockerfile `ARG` that
+holds it. Still one place, still in the Dockerfile.
+
 ## How an image stays current
 
 Four mechanisms, each covering what the others cannot see.
@@ -106,3 +111,10 @@ Set the org secret `DRAGONGUARD_TOKEN` to a token with read access to
 3. Copy `templates/` into the repository's `.github/workflows/`, replacing
    `UPSTREAM` with the base image name and giving the refresh cron a slot
    nothing else is using.
+
+## The one image that does not use any of this
+
+`iron-nessus` gets hadolint and nothing else. Nessus is licensed per
+activation, so a built image contains an activated installation tied to
+somebody's licence, and every workflow here ends in a push to GHCR. Its README
+says so at the top.
