@@ -45,10 +45,13 @@ on:
         type: string
         required: false
         default: linux/amd64,linux/arm64
-      severity:
+      fail-on:
+        description: >-
+          Rating at or above which the published image is considered to have a
+          problem worth an issue.
         type: string
         required: false
-        default: CRITICAL,HIGH
+        default: high
       republish:
         description: Push a rebuilt image when its package set has changed.
         type: boolean
@@ -58,9 +61,6 @@ on:
         type: string
         required: false
         default: "0.74.0"
-    secrets:
-      dragonguard-token:
-        required: false
 
 permissions:
   contents: read
@@ -87,13 +87,16 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # continue-on-error rather than fail-on empty: the verdict is what decides
+      # whether the tracking issue opens, so it has to be produced without
+      # ending the job.
       - name: Scan
-        uses: irondragonservices/.github/actions/dragon-scan@main
+        id: scan
+        continue-on-error: true
+        uses: irondragonservices/.github/actions/dragon-scan@feat/dragonguard-engine
         with:
           image: ghcr.io/${{ github.repository }}:latest
-          severity: ${{ inputs.severity }}
-          fail-on: ""
-          dragonguard-token: ${{ secrets.dragonguard-token }}
+          fail-on: ${{ inputs.fail-on }}
           trivy-version: ${{ inputs.trivy-version }}
 
       - name: Upload SARIF
@@ -104,22 +107,14 @@ jobs:
           sarif_file: dragon.sarif
           category: image
 
-      - name: Gate
-        id: gate
-        continue-on-error: true
-        run: |
-          set -euo pipefail
-          trivy image --exit-code 1 --severity "${{ inputs.severity }}" \
-            --ignore-unfixed --no-progress "ghcr.io/${{ github.repository }}:latest"
-
       # One issue, updated in place. A new issue per run gets muted within a
       # week, and a muted alert is the same as no alert.
       - name: Track findings in an issue
         if: always()
         uses: actions/github-script@v7
         env:
-          SEVERITY: ${{ inputs.severity }}
-          GATE_OUTCOME: ${{ steps.gate.outcome }}
+          FAIL_ON: ${{ inputs.fail-on }}
+          GATE_OUTCOME: ${{ steps.scan.outcome }}
         with:
           script: |
             const fs = require('fs');
@@ -135,7 +130,7 @@ jobs:
             if (!failed) {
               if (mine) {
                 await github.rest.issues.createComment({owner, repo, issue_number: mine.number,
-                  body: `Clear as of ${new Date().toISOString()} — no fixable ${process.env.SEVERITY} findings remain.`});
+                  body: `Clear as of ${new Date().toISOString()} — no fixable ${process.env.FAIL_ON}-or-above findings remain.`});
                 await github.rest.issues.update({owner, repo, issue_number: mine.number, state: 'closed'});
               }
               return;
@@ -145,7 +140,7 @@ jobs:
             try { report = fs.readFileSync('dragon.md', 'utf8'); } catch (e) {}
             const body = [
               `The image published at \`ghcr.io/${owner}/${repo}:latest\` has fixable`,
-              `findings at ${process.env.SEVERITY}.`,
+              `findings at or above ${process.env.FAIL_ON}.`,
               '',
               `Last checked: ${new Date().toISOString()}`,
               `Run: ${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`,

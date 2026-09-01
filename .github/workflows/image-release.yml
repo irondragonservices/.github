@@ -35,18 +35,11 @@ on:
         type: string
         required: false
         default: linux/amd64,linux/arm64
-      severity:
-        type: string
-        required: false
-        default: CRITICAL,HIGH
       release:
         description: Cut a GitHub release for a version that does not have one.
         type: boolean
         required: false
         default: true
-    secrets:
-      dragonguard-token:
-        required: false
     outputs:
       version:
         value: ${{ jobs.publish.outputs.version }}
@@ -129,12 +122,10 @@ jobs:
       # The pull request scanned a locally built image. This scans the artefact
       # that consumers will actually pull, by digest.
       - name: Scan the published image
-        uses: irondragonservices/.github/actions/dragon-scan@main
+        uses: irondragonservices/.github/actions/dragon-scan@feat/dragonguard-engine
         with:
           image: ghcr.io/${{ github.repository }}@${{ steps.build.outputs.digest }}
-          severity: ${{ inputs.severity }}
           fail-on: ""
-          dragonguard-token: ${{ secrets.dragonguard-token }}
 
       - name: Upload SARIF
         # Code scanning on a private repository needs GitHub Advanced

@@ -37,10 +37,6 @@ on:
         type: string
         required: false
         default: linux/amd64,linux/arm64
-      severity:
-        type: string
-        required: false
-        default: CRITICAL,HIGH
       fail-on:
         description: >-
           Rating at which the gate blocks the pull request. Set to an empty
@@ -52,9 +48,6 @@ on:
         type: string
         required: false
         default: warning
-    secrets:
-      dragonguard-token:
-        required: false
 
 permissions:
   contents: read
@@ -116,12 +109,13 @@ jobs:
           cache-from: type=gha
 
       - name: Scan
-        uses: irondragonservices/.github/actions/dragon-scan@main
+        uses: irondragonservices/.github/actions/dragon-scan@feat/dragonguard-engine
         with:
           image: candidate:${{ steps.version.outputs.version }}
-          severity: ${{ inputs.severity }}
+          # Built in the step above and loaded into the local daemon; it exists
+          # in no registry, so Trivy has to be told to look at the daemon.
+          image-source: docker
           fail-on: ${{ inputs.fail-on }}
-          dragonguard-token: ${{ secrets.dragonguard-token }}
 
       - name: Upload report
         if: always() && hashFiles('dragon.md') != ''
