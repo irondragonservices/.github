@@ -78,7 +78,7 @@ jobs:
     name: rescan published
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Log in to GHCR
         uses: docker/login-action@v3
@@ -159,7 +159,7 @@ jobs:
     if: inputs.republish
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
 
@@ -191,7 +191,7 @@ jobs:
       # No cache, or the whole exercise is pointless: a warm cache replays the
       # apk/apt layer from the day it was first built and picks up nothing.
       - name: Rebuild without cache
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: ${{ inputs.context }}
           file: ${{ inputs.dockerfile }}
@@ -238,7 +238,7 @@ jobs:
       - name: Republish
         id: build
         if: steps.diff.outputs.changed == 'true'
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: ${{ inputs.context }}
           file: ${{ inputs.dockerfile }}
