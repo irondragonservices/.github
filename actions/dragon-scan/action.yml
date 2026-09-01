@@ -1,77 +1,76 @@
 name: DragonGuard image scan
-description: >-
-  Scan a container image and emit SARIF. Runs DragonGuard when a token that can
-  read DragonSecurity/dragonguard is supplied, and plain Trivy when it is not.
+description: Scan a container image with DragonGuard and emit SARIF.
 
-# DragonGuard is the unifying layer: it normalises Trivy (and, on source
-# targets, OpenGrep, Gitleaks and OSV) into one finding schema, scores it
-# against the asset's context and gates on a baseline. Until it publishes
-# releases it lives in a private repository, so this action degrades to the
-# engine underneath rather than failing a build over a missing secret. When
-# DragonGuard ships a public binary, only this file changes.
+# DragonGuard is the unifying layer: it normalises what Trivy and the other
+# engines find into one schema, scores each finding against the asset's
+# context, and gates on a baseline rather than on a raw severity count.
+#
+# It is public and has no release yet, so it is built from source here, pinned
+# to a commit rather than tracking main — for the same reason the Trivy version
+# is pinned. A scanner that changes underneath you changes every verdict it
+# produces, and a gate that moves on its own is not a gate.
+#
+# There is no fallback engine. A scan that could not run is not the same thing
+# as a scan that found nothing, so failing to build or run DragonGuard fails the
+# step rather than quietly degrading to something weaker.
 
 inputs:
   image:
     description: Image reference to scan, including the tag or digest.
     required: true
-  severity:
-    description: Comma-separated severities that count as findings.
+  image-source:
+    description: >-
+      Where Trivy should look for the image: "docker" for one built in this job
+      and loaded into the local daemon, "remote" for one already in a registry.
+
+      Not cosmetic. DragonGuard passes --image-src remote to Trivy
+      unconditionally, so scanning a locally built image without overriding this
+      fails with UNAUTHORIZED against docker.io — the local daemon is never
+      consulted. The override rides in on engines.trivy.args, which DragonGuard
+      appends after its own flags.
     required: false
-    default: CRITICAL,HIGH
+    default: remote
   fail-on:
     description: >-
-      Block at or above this rating. Empty means report but do not fail, which
+      Block at or above this rating. Empty means report without failing, which
       is what a scheduled re-scan of an already-published image wants.
     required: false
     default: ""
   sarif-output:
-    description: Where to write the SARIF report.
     required: false
     default: dragon.sarif
   markdown-output:
-    description: Where to write the human-readable report.
     required: false
     default: dragon.md
-  dragonguard-token:
-    description: Token with read access to DragonSecurity/dragonguard.
+  dragonguard-repository:
     required: false
-    default: ""
+    default: DragonSecurity/dragonguard
   dragonguard-ref:
-    description: Ref of DragonSecurity/dragonguard to build.
+    description: >-
+      Commit of DragonGuard to build. Swap this for a tag once one exists, or
+      drop the build entirely once it publishes a binary — this file is the only
+      place it is named.
     required: false
-    default: main
+    default: "725de6b2e4cfae0ac96fa7833e4767b333714078"
   trivy-version:
     description: >-
       Pinned, because a scanner that changes underneath you changes every
-      verdict it produces.
+      verdict it produces. DragonGuard shells out to Trivy for container
+      targets.
     required: false
     default: "0.74.0"
 
 outputs:
-  engine:
-    description: Which engine produced the report, dragonguard or trivy.
-    value: ${{ steps.engine.outputs.engine }}
   sarif:
     description: Path to the SARIF report.
     value: ${{ inputs.sarif-output }}
+  markdown:
+    description: Path to the human-readable report.
+    value: ${{ inputs.markdown-output }}
 
 runs:
   using: composite
   steps:
-    - name: Decide engine
-      id: engine
-      shell: bash
-      run: |
-        set -euo pipefail
-        if [ -n "${{ inputs.dragonguard-token }}" ]; then
-          echo "engine=dragonguard" >> "$GITHUB_OUTPUT"
-        else
-          echo "engine=trivy" >> "$GITHUB_OUTPUT"
-          echo "::notice::DRAGONGUARD_TOKEN is not set; falling back to raw Trivy. Findings will not be scored or gated."
-        fi
-
-    # DragonGuard shells out to Trivy for container targets, so the binary is
-    # needed on both paths.
     - name: Install Trivy
       shell: bash
       run: |
@@ -81,40 +80,43 @@ runs:
         trivy --version
 
     - name: Check out DragonGuard
-      if: steps.engine.outputs.engine == 'dragonguard'
       uses: actions/checkout@v4
       with:
-        repository: DragonSecurity/dragonguard
+        repository: ${{ inputs.dragonguard-repository }}
         ref: ${{ inputs.dragonguard-ref }}
-        token: ${{ inputs.dragonguard-token }}
         path: .dragonguard-src
 
     - name: Set up Go
-      if: steps.engine.outputs.engine == 'dragonguard'
       uses: actions/setup-go@v5
       with:
         go-version-file: .dragonguard-src/go.mod
-        cache: false
+        cache-dependency-path: .dragonguard-src/go.sum
 
     - name: Build DragonGuard
-      if: steps.engine.outputs.engine == 'dragonguard'
       shell: bash
       run: |
         set -euo pipefail
         cd .dragonguard-src
         go build -o "$RUNNER_TEMP/dragon" ./cmd/dragon
-        "$RUNNER_TEMP/dragon" version || true
 
-    - name: Scan with DragonGuard
-      if: steps.engine.outputs.engine == 'dragonguard'
+    - name: Scan
       shell: bash
+      env:
+        IMAGE: ${{ inputs.image }}
+        IMAGE_SOURCE: ${{ inputs.image-source }}
+        FAIL_ON: ${{ inputs.fail-on }}
+        SARIF_OUT: ${{ inputs.sarif-output }}
+        MD_OUT: ${{ inputs.markdown-output }}
       run: |
         set -euo pipefail
-        # A repository that carries its own .dragon.yaml keeps its asset
-        # context; one that does not gets a base-image default. Getting the
-        # context wrong changes the score, so the repository's own file wins.
+
+        # A repository carrying its own .dragon.yaml keeps its asset context,
+        # which every risk score is calculated against. One that does not gets a
+        # base-image default. Getting the context wrong changes every score, so
+        # the repository's own file always wins.
         if [ ! -f .dragon.yaml ]; then
-          cat > .dragon.yaml <<'CFG'
+          echo "::notice::no .dragon.yaml here; using the base-image default asset context"
+          cat > .dragon.yaml <<CFG
         version: dragonguard/v1
         project: image
         asset:
@@ -125,39 +127,34 @@ runs:
         engines:
           trivy:
             enabled: true
+            args: ["--image-src", "${IMAGE_SOURCE}"]
         CFG
         fi
-        args=(scan container --image "${{ inputs.image }}" --quiet)
-        "$RUNNER_TEMP/dragon" "${args[@]}" --format sarif    --output "${{ inputs.sarif-output }}"    || true
-        "$RUNNER_TEMP/dragon" "${args[@]}" --format markdown --output "${{ inputs.markdown-output }}" || true
-        if [ -n "${{ inputs.fail-on }}" ]; then
-          "$RUNNER_TEMP/dragon" "${args[@]}" --fail-on "${{ inputs.fail-on }}"
+
+        # Produce the artefacts first, then gate. Reporting the findings matters
+        # even when — especially when — the gate blocks.
+        "$RUNNER_TEMP/dragon" scan container --image "$IMAGE" --quiet --format sarif    --output "$SARIF_OUT" || true
+        "$RUNNER_TEMP/dragon" scan container --image "$IMAGE" --quiet --format markdown --output "$MD_OUT"    || true
+
+        set +e
+        if [ -n "$FAIL_ON" ]; then
+          "$RUNNER_TEMP/dragon" scan container --image "$IMAGE" --no-color --fail-on "$FAIL_ON" | tee dragon.txt
         else
-          "$RUNNER_TEMP/dragon" "${args[@]}" || true
+          "$RUNNER_TEMP/dragon" scan container --image "$IMAGE" --no-color | tee dragon.txt
+        fi
+        rc=${PIPESTATUS[0]}
+        set -e
+
+        # DragonGuard exits 0 when its only engine failed outright. Its README
+        # says exit 2 for a scan that could not complete, and its own baseline
+        # prints "!! complete evidence ... degraded" — so it knows; the verdict
+        # just does not reach the exit status. Until that is fixed, a green
+        # check here would mean "nothing looked at this image", which is worse
+        # than having no check at all.
+        if grep -qE "scan was degraded|engines failed" dragon.txt; then
+          echo "::error::the scan did not complete; a degraded scan is treated as a failure, not a pass"
+          sed -n '/Evidence/,$p' dragon.txt
+          exit 1
         fi
 
-    - name: Scan with Trivy
-      if: steps.engine.outputs.engine == 'trivy'
-      shell: bash
-      run: |
-        set -euo pipefail
-        # Trivy auto-detects .trivyignore in the working directory, but naming
-        # it is worth the line: a suppression that silently stops applying
-        # because the working directory moved is worse than no suppression.
-        ignore=()
-        if [ -f .trivyignore ]; then
-          ignore=(--ignorefile .trivyignore)
-          echo "::notice::using .trivyignore"
-        fi
-        trivy image "${ignore[@]}" --format sarif --output "${{ inputs.sarif-output }}" \
-          --severity "${{ inputs.severity }}" --ignore-unfixed --no-progress \
-          "${{ inputs.image }}"
-        trivy image "${ignore[@]}" --format table --output "${{ inputs.markdown-output }}" \
-          --severity "${{ inputs.severity }}" --ignore-unfixed --no-progress \
-          "${{ inputs.image }}"
-        # Only gate when asked to. A scheduled re-scan reports; a pull request
-        # blocks.
-        if [ -n "${{ inputs.fail-on }}" ]; then
-          trivy image "${ignore[@]}" --exit-code 1 --severity "${{ inputs.severity }}" \
-            --ignore-unfixed --no-progress "${{ inputs.image }}"
-        fi
+        exit "$rc"
