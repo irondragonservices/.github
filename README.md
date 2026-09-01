@@ -28,8 +28,6 @@ jobs:
     uses: irondragonservices/.github/.github/workflows/image-release.yml@main
     with:
       version-from: alpine
-    secrets:
-      dragonguard-token: ${{ secrets.DRAGONGUARD_TOKEN }}
 ```
 
 `version-from` names the upstream image whose tag defines this image's
@@ -99,16 +97,45 @@ docker buildx imagetools inspect ghcr.io/irondragonservices/iron-alpine:3 \
 
 ## DragonGuard
 
-The scan step prefers [DragonGuard](https://github.com/DragonSecurity/dragonguard),
-which normalises Trivy and the other engines into one finding schema, scores
-each finding against the asset's context, and gates on a baseline rather than
-on a raw severity count. It is private and pre-release, so `actions/dragon-scan`
-degrades to raw Trivy when `DRAGONGUARD_TOKEN` is not set rather than failing a
-build over a missing secret. When DragonGuard publishes a binary, that one file
-changes and the fleet picks it up.
+Every scan runs through [DragonGuard](https://github.com/DragonSecurity/dragonguard),
+which normalises what Trivy finds into one schema, scores each finding against
+the asset's context, and gates on a baseline rather than on a severity list.
 
-Set the org secret `DRAGONGUARD_TOKEN` to a token with read access to
-`DragonSecurity/dragonguard` to turn it on.
+It is public and has no release yet, so `actions/dragon-scan` builds it from a
+pinned commit. No token, no secret, nothing to configure. The pin is
+deliberate: a scanner that changes underneath you changes every verdict it
+produces.
+
+There is no fallback engine. A scan that could not run is not the same thing as
+a scan that found nothing, so a failure to build or run DragonGuard fails the
+step.
+
+### Two things worth knowing about it
+
+**`image-source` is not cosmetic.** DragonGuard passes `--image-src remote` to
+Trivy unconditionally, so it can only scan images that already exist in a
+registry. The pull request gate builds an image and loads it into the local
+daemon, where no registry can see it — without the override that scan fails
+with `UNAUTHORIZED` against `docker.io`. The override rides in on
+`engines.trivy.args`, which DragonGuard appends after its own flags. The
+release and refresh scans target published digests and use the default.
+
+**A degraded scan exits 0.** When Trivy fails outright, DragonGuard reports
+`!! complete evidence ... degraded`, scores every dimension `not assessed`,
+prints `Dragon Gate: WARN`, and exits **0** — the same status as a clean pass,
+`--fail-on` included. Its own README says exit 2 is for a scan that could not
+complete, so the information is there; it just does not reach the exit status.
+A green check meaning "nothing looked at this image" is worse than no check at
+all, so `actions/dragon-scan` greps the report for the degraded marker and
+fails the step itself. Remove that guard once the exit status is fixed
+upstream.
+
+### Asset context
+
+A repository carrying its own `.dragon.yaml` keeps its asset context, which is
+what every risk score is calculated against. One that does not gets a
+base-image default: production, high criticality, not internet-exposed. If an
+image deserves different framing, commit a `.dragon.yaml`.
 
 ## Adding an image repository
 

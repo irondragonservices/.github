@@ -122,7 +122,7 @@ jobs:
       # The pull request scanned a locally built image. This scans the artefact
       # that consumers will actually pull, by digest.
       - name: Scan the published image
-        uses: irondragonservices/.github/actions/dragon-scan@feat/dragonguard-engine
+        uses: irondragonservices/.github/actions/dragon-scan@main
         with:
           image: ghcr.io/${{ github.repository }}@${{ steps.build.outputs.digest }}
           fail-on: ""

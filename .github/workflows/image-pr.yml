@@ -109,7 +109,7 @@ jobs:
           cache-from: type=gha
 
       - name: Scan
-        uses: irondragonservices/.github/actions/dragon-scan@feat/dragonguard-engine
+        uses: irondragonservices/.github/actions/dragon-scan@main
         with:
           image: candidate:${{ steps.version.outputs.version }}
           # Built in the step above and loaded into the local daemon; it exists

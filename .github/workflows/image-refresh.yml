@@ -93,7 +93,7 @@ jobs:
       - name: Scan
         id: scan
         continue-on-error: true
-        uses: irondragonservices/.github/actions/dragon-scan@feat/dragonguard-engine
+        uses: irondragonservices/.github/actions/dragon-scan@main
         with:
           image: ghcr.io/${{ github.repository }}:latest
           fail-on: ${{ inputs.fail-on }}
