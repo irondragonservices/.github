@@ -22,7 +22,7 @@ built image carries somebody's entitlement.
 | [iron-nginx](https://github.com/irondragonservices/iron-nginx) | distroless | Serving static content |
 | [iron-redis](https://github.com/irondragonservices/iron-redis) | distroless | Redis |
 | [iron-cockroachdb](https://github.com/irondragonservices/iron-cockroachdb) | scratch | CockroachDB |
-| [iron-argo](https://github.com/irondragonservices/iron-argo) | scratch | Cloudflare Tunnel |
+| [iron-cloudflared](https://github.com/irondragonservices/iron-cloudflared) | scratch | Cloudflare Tunnel |
 | [iron-squid](https://github.com/irondragonservices/iron-squid) | distroless | Squid proxy |
 | [iron-snapraid](https://github.com/irondragonservices/iron-snapraid) | scratch | SnapRAID |
 | [iron-nessus](https://github.com/irondragonservices/iron-nessus) | debian | Nessus — **not published**, build it yourself |
