@@ -9,7 +9,8 @@ cache-free scheduled rebuild that republishes only on a real package change,
 and a re-scan that catches vulnerabilities disclosed after the build.
 
 Every published image is multi-architecture, signed with cosign keyless, and
-ships an SBOM and provenance attestation. `iron-nessus` is the one exception
+ships an SBOM and provenance attestation. Each repository's README carries the
+exact `cosign verify` command for it. `iron-nessus` is the one exception
 and is deliberately not published — Nessus is licensed per activation, so a
 built image carries somebody's entitlement.
 

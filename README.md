@@ -75,9 +75,20 @@ signature is bound to the workflow identity that produced it.
 
 ```sh
 cosign verify ghcr.io/irondragonservices/iron-alpine:3 \
-  --certificate-identity-regexp '^https://github.com/irondragonservices/' \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+  --certificate-identity-regexp '^https://github\.com/irondragonservices/\.github/\.github/workflows/image-(release|refresh)\.yml@refs/heads/main$' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-github-workflow-repository irondragonservices/iron-alpine
 ```
+
+The identity is a workflow *in this repository*, not in the image's own — this
+is where the signing happens, so this is what the certificate names. That is
+worth stating plainly, because the obvious pattern to reach for,
+`^https://github.com/irondragonservices/`, accepts a signature from any
+workflow in any repository in the organisation. The image's own repository
+comes from the `--certificate-github-workflow-repository` claim instead.
+
+Both `image-release` and `image-refresh` sign, so both have to be matched: the
+nightly rebuild republishes when the package set has genuinely changed.
 
 SBOM and provenance are attached as attestations:
 
