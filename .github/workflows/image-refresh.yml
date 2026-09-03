@@ -111,7 +111,7 @@ jobs:
       # week, and a muted alert is the same as no alert.
       - name: Track findings in an issue
         if: always()
-        uses: actions/github-script@v7
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         env:
           FAIL_ON: ${{ inputs.fail-on }}
           GATE_OUTCOME: ${{ steps.scan.outcome }}
